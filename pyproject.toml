@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sera-lab"
+version = "0.0.1"
+description = "Local-only SERA-style synthetic trajectory + LoRA experiment"
+requires-python = ">=3.10"
+dependencies = [
+  "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
