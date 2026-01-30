@@ -4,6 +4,15 @@
 - Primary: Ubuntu 24.04 LTS (noble)
 - Best-effort: Ubuntu 22.04 LTS (jammy)
 
+## Optional AI Tool Inits (Local Convenience Only)
+These are optional and are NOT required to run the project:
+- codex init
+- gemini init
+- antigravity init
+- beads init (memory)
+
+Any files created by these tools are local developer state and should not be committed unless explicitly reviewed and deemed non-sensitive.
+
 ## Assumptions (Phase 0)
 - `sudo` works
 - outbound internet works
