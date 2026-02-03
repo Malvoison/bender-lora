@@ -1,15 +1,36 @@
 # SERA System Design (Experiment)
 
-## 1. Purpose
-Build a local-only SERA-style pipeline that:
-1) Generates synthetic agent trajectories against a repo (rollout 1)
-2) Converts rollout 1 into a synthetic PR description (no diff)
-3) Reproduces the change from the PR (rollout 2)
-4) Soft-verifies by patch overlap
-5) Produces a training dataset
-6) Fine-tunes a LoRA adapter (QLoRA) for the chosen base model
+## Purpose
 
-This is an experiment, not production. Optimize for iteration speed, observability, and reproducibility.
+This project builds a local-only experimental system to answer a specific question:
+
+Can a SERA-style synthetic trajectory pipeline, operating entirely on local inference,
+produce a LoRA adapter that measurably improves an agent’s ability to navigate,
+modify, and validate changes within a code repository it has not previously seen?
+
+The system is designed to:
+- generate synthetic code-editing trajectories using a constrained agent tool loop
+- filter those trajectories via soft verification rather than strict test oracles
+- convert accepted trajectories into supervised fine-tuning data
+- train a LoRA adapter against a fixed base model
+- evaluate whether the adapted model exhibits improved, repo-specific agent behavior
+
+This is an experiment, not a production system.
+
+The primary success criteria are:
+- the system can autonomously generate, verify, and persist training data
+- a trained LoRA adapter demonstrably changes agent behavior relative to the base model
+- improvements are observable on a fixed set of repo-local “golden” tasks
+- all results are reproducible from recorded artifacts (config, manifests, transcripts)
+
+Non-goals include:
+- maximizing benchmark scores
+- supporting arbitrary repositories or languages
+- optimizing for scale or throughput
+- achieving state-of-the-art performance
+
+The emphasis is on correctness of process, clarity of artifacts, and experimental control.
+
 
 ## 2. Hard Constraints
 - All token-heavy generation MUST use local inference via Ollama.

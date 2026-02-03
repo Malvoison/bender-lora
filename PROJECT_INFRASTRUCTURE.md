@@ -23,3 +23,14 @@ Run from repo root:
 
 ```bash
 ./bootstrap_env.sh --with-ollama --with-docker --gpu --model qwen2.5-coder:7b-instruct
+```
+## Beads (Out-of-Band Memory)
+
+This project uses Beads as a persistent, out-of-band memory store for durable decisions
+and clarifications that should survive across sessions.
+
+Beads usage rules are defined in `BEADS_USAGE.md`.
+Beads is not part of the runtime agent execution environment.
+
+
+
