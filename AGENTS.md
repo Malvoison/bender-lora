@@ -12,6 +12,8 @@ Agents may only use the following tools:
 - apply_patch(unified_diff)
 - run(cmd) — restricted (see below)
 
+Agents must not invent new tools.
+
 ## Command Execution (`run(cmd)`)
 Allowed commands:
 - python -m pytest -q
