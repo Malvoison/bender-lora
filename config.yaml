@@ -1,0 +1,74 @@
+schema_version: 1
+
+paths:
+  runs_dir: "runs"
+
+repo:
+  # The repo under experiment. For this initial prototype, it is the current repo.
+  # Later, we can point at a separate fabricated training repo path.
+  root: "."
+
+model:
+  teacher:
+    provider: "ollama"
+    name: "qwen2.5-coder:7b-instruct"
+    base_url: "http://localhost:11434"
+    temperature: 0.3
+    top_p: 0.9
+    max_tokens: 2048
+
+runtime:
+  seed: 1337
+  max_steps: 20
+
+  # Caps to prevent runaway context/tool dumps
+  max_file_read_lines: 400
+  max_tool_output_kb: 64
+  max_total_transcript_chars: 300000
+
+  # Sampling (v1: file-level; v2: function-level)
+  sampling:
+    mode: "file"
+    include_globs:
+      - "src/**/*.py"
+      - "tests/**/*.py"
+    exclude_globs:
+      - "**/.git/**"
+      - "**/.venv/**"
+      - "**/__pycache__/**"
+
+sandbox:
+  enabled: true
+  engine: "docker"
+  docker_image: "python:3.12-slim"
+  network: "none"
+  timeout_seconds: 120
+  cpu_limit: "2"
+  mem_limit: "4g"
+
+  # run(cmd) allowlist: exact argv prefixes (no shell)
+  run_allowlist:
+    - ["python", "-m", "pytest", "-q"]
+    - ["python", "-m", "compileall", "-q", "src"]
+
+verification:
+  soft_verify_threshold: 0.35
+  max_files_changed: 3
+  max_changed_lines: 200
+  require_pytest_pass: true
+  forbidden_path_globs:
+    - "**/.git/**"
+    - "**/.venv/**"
+    - "**/__pycache__/**"
+    - "**/*.env"
+    - "**/.env*"
+    - "**/runs/**"   # never allow generated artifacts to be edited
+
+dataset:
+  format: "tool_transcript_jsonl"
+  include_tool_results: true
+  truncation_strategy: "keep_tail"
+
+training:
+  enabled: false
+  adapter_id_prefix: "lora"

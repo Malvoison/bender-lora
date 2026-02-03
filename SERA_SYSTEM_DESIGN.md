@@ -170,3 +170,511 @@ Provide commands to:
 - GPU driver installation
 - External model calls for teacher steps
 - Full SWE-bench parity
+
+## 10. Interfaces and Schemas v1
+
+This section defines the concrete v1 interfaces required to implement the system without ambiguity. These interfaces are intentionally minimal and may evolve, but must be versioned when they do.
+
+### 10.1 Configuration file (`config.yaml`)
+
+Location:
+
+* Repo root: `config.yaml`
+
+Purpose:
+
+* Provide a single source of truth for runtime defaults (model, sandbox, thresholds, caps, paths).
+* Allow CLI flags to override config values.
+
+Example `config.yaml`:
+
+```yaml
+schema_version: 1
+
+paths:
+  runs_dir: "runs"
+
+model:
+  teacher:
+    provider: "ollama"
+    name: "qwen2.5-coder:7b-instruct"
+    # Optional: if your Ollama endpoint is not default
+    base_url: "http://localhost:11434"
+    # Generation defaults (tune later)
+    temperature: 0.3
+    top_p: 0.9
+    max_tokens: 2048
+
+runtime:
+  seed: 1337
+  max_steps: 20
+  # Caps to prevent giant context/tool dumps
+  max_file_read_lines: 400
+  max_tool_output_kb: 64
+  max_total_transcript_chars: 300000
+
+sandbox:
+  enabled: true
+  engine: "docker"
+  docker_image: "python:3.12-slim"
+  network: "none"
+  timeout_seconds: 120
+  cpu_limit: "2"
+  mem_limit: "4g"
+  # Explicit allowlist of exact argv prefixes (no shell metacharacters)
+  run_allowlist:
+    - ["python", "-m", "pytest", "-q"]
+    - ["python", "-m", "compileall", "-q", "src"]
+
+verification:
+  soft_verify_threshold: 0.35
+  max_files_changed: 3
+  max_changed_lines: 200
+  require_pytest_pass: true
+  forbidden_path_globs:
+    - "**/.git/**"
+    - "**/.venv/**"
+    - "**/__pycache__/**"
+    - "**/*.env"
+    - "**/.env*"
+
+dataset:
+  format: "tool_transcript_jsonl"
+  include_tool_results: true
+  # If truncation occurs, keep the tail (where edits happen) unless otherwise configured
+  truncation_strategy: "keep_tail"
+
+training:
+  enabled: false
+  # Placeholder for future training params
+  adapter_id_prefix: "lora"
+```
+
+Rules:
+
+* `schema_version` must be present.
+* When the schema changes incompatibly, increment `schema_version`.
+
+### 10.2 CLI contract (v1)
+
+This section defines the required CLI surface and its minimal behavior. Implementation can use `argparse`.
+
+All commands are invoked as:
+
+* `python -m sera_lab <command> [args...]`
+
+Commands:
+
+1. `check`
+
+* Verifies prerequisites for running the experiment.
+* Must confirm:
+
+  * Python environment is active
+  * Docker is available (if sandbox enabled)
+  * Ollama is reachable
+  * Teacher model is present (or can be pulled if allowed by the operator)
+
+2. `generate`
+
+* Generates synthetic samples into a run directory.
+* Required args:
+
+  * `--run-id <string>` (required)
+  * `--count <int>` (default 1)
+* Optional args:
+
+  * `--config <path>` (default `config.yaml` if exists)
+  * `--seed <int>` override
+* Output:
+
+  * Creates `runs/<run-id>/samples/<sample-id>/` folders
+  * Writes placeholder artifacts for each sample (even if later steps fail)
+  * Appends a row to `runs/<run-id>/manifest.jsonl` per sample
+
+3. `verify`
+
+* Recomputes soft verification for samples in a run (or a single sample).
+* Args:
+
+  * `--run-id <string>` required
+  * `--sample-id <string>` optional (if omitted, verify all)
+* Output:
+
+  * Writes/updates `verify.json` for each processed sample
+  * Updates `manifest.jsonl` row fields (`accepted`, `reject_reason`, `r`)
+
+4. `build-dataset`
+
+* Builds training JSONL from accepted samples.
+* Args:
+
+  * `--run-id <string>` required
+* Output:
+
+  * Writes `runs/<run-id>/train.jsonl`
+  * Writes `runs/<run-id>/dataset_report.json` (counts, truncation stats)
+
+5. `train` (future-facing; may be stubbed initially)
+
+* Trains a LoRA adapter from `train.jsonl`.
+* Args:
+
+  * `--run-id <string>` required
+  * `--adapter-id <string>` required
+* Output:
+
+  * Writes adapter artifacts under `runs/<run-id>/adapters/<adapter-id>/`
+
+6. `eval` (future-facing; may be stubbed initially)
+
+* Runs golden-task evaluation comparing base vs base+adapter.
+* Args:
+
+  * `--adapter-id <string>` required
+
+
+### 10.3 Run and sample directory layout (v1)
+
+All experiment artifacts live under:
+
+* `runs/<run-id>/`
+
+Structure:
+
+```
+runs/<run-id>/
+  config.snapshot.yaml
+  manifest.jsonl
+  dataset_report.json            # optional, produced by build-dataset
+  train.jsonl                    # produced by build-dataset
+  samples/
+    <sample-id>/
+      meta.json
+      rollout1.json
+      patch1.diff
+      pr.txt
+      rollout2.json
+      patch2.diff
+      verify.json
+      sandbox/
+        rollout1.stdout.txt
+        rollout1.stderr.txt
+        rollout2.stdout.txt
+        rollout2.stderr.txt
+```
+
+Rules:
+
+* `<sample-id>` is a zero-padded numeric string: `000001`, `000002`, …
+* `config.snapshot.yaml` is copied from the resolved config at run start (after CLI overrides) to make runs reproducible.
+* Every sample folder must be created even if rollout fails; failure details go in `meta.json` and `verify.json`.
+
+
+### 10.4 Manifest row schema (`manifest.jsonl`) (v1)
+
+`manifest.jsonl` is append-only, one JSON object per line.
+
+Required fields:
+
+* `schema_version` (int) — manifest row schema version (start at 1)
+* `run_id` (string)
+* `sample_id` (string, zero-padded numeric)
+* `seed` (int)
+* `created_at` (ISO-8601 string)
+* `repo` (object):
+
+  * `path` (string) — repo root path used for generation (may be absolute)
+  * `commit_sha` (string or null)
+* `artifacts` (object):
+
+  * `sample_dir` (string)
+  * `rollout1` (string path)
+  * `patch1` (string path)
+  * `pr` (string path)
+  * `rollout2` (string path)
+  * `patch2` (string path)
+  * `verify` (string path)
+* `verification` (object):
+
+  * `r` (number or null) — soft verification recall score
+  * `accepted` (bool)
+  * `reject_reason` (string or null)
+* `stats` (object):
+
+  * `steps_rollout1` (int or null)
+  * `steps_rollout2` (int or null)
+  * `tool_calls_rollout1` (int or null)
+  * `tool_calls_rollout2` (int or null)
+  * `elapsed_ms_rollout1` (int or null)
+  * `elapsed_ms_rollout2` (int or null)
+
+Example row:
+
+```json
+{
+  "schema_version": 1,
+  "run_id": "devrun",
+  "sample_id": "000001",
+  "seed": 14599423,
+  "created_at": "2026-02-02T21:15:30Z",
+  "repo": {
+    "path": "/home/ken/src/sera-lab",
+    "commit_sha": "abc123def4567890"
+  },
+  "artifacts": {
+    "sample_dir": "runs/devrun/samples/000001",
+    "rollout1": "runs/devrun/samples/000001/rollout1.json",
+    "patch1": "runs/devrun/samples/000001/patch1.diff",
+    "pr": "runs/devrun/samples/000001/pr.txt",
+    "rollout2": "runs/devrun/samples/000001/rollout2.json",
+    "patch2": "runs/devrun/samples/000001/patch2.diff",
+    "verify": "runs/devrun/samples/000001/verify.json"
+  },
+  "verification": {
+    "r": null,
+    "accepted": false,
+    "reject_reason": "placeholder"
+  },
+  "stats": {
+    "steps_rollout1": null,
+    "steps_rollout2": null,
+    "tool_calls_rollout1": null,
+    "tool_calls_rollout2": null,
+    "elapsed_ms_rollout1": null,
+    "elapsed_ms_rollout2": null
+  }
+}
+```
+
+Notes:
+
+* For early milestones, `commit_sha` may be null if git is unavailable.
+* `reject_reason` should be a stable short token (e.g., `tool_invalid`, `timeout`, `patch_too_large`, `soft_verify_low`, `forbidden_path`, `pytest_failed`, `placeholder`).
+
+### 10.5 Transcript schema (`rollout*.json`) (v1)
+
+Each rollout file is a single JSON document (not JSONL). It records the full interaction: prompts, model outputs, tool calls, tool results, and termination reason.
+
+Top-level fields:
+
+* `schema_version` (int) — transcript schema version (start at 1)
+* `rollout_id` (string) — `rollout1` or `rollout2`
+* `run_id` (string)
+* `sample_id` (string)
+* `seed` (int)
+* `started_at` / `ended_at` (ISO-8601 strings)
+* `model` (object):
+
+  * `provider` (string) — `ollama`
+  * `name` (string)
+  * `base_url` (string)
+  * `temperature` (number)
+  * `top_p` (number)
+  * `max_tokens` (int)
+* `messages` (array) — chronological
+* `termination` (object):
+
+  * `reason` (string) — `completed`, `max_steps`, `invalid_tool_call`, `sandbox_error`, `model_error`
+  * `details` (string or null)
+
+Message objects:
+
+* `role` (string): `system` | `user` | `assistant` | `tool`
+* `content` (string) — natural language or tool output (truncated if needed)
+* Optional `tool_call` (object) when `role=assistant` and calling a tool:
+
+  * `name` (string): `read_file` | `search` | `apply_patch` | `run`
+  * `arguments` (object) — tool input arguments
+* Optional `tool_result` (object) when `role=tool`:
+
+  * `name` (string)
+  * `output` (string) — tool output (truncated if needed)
+  * `exit_code` (int or null)
+  * `truncated` (bool)
+
+Rules:
+
+* Tool calls MUST be represented explicitly via `tool_call`.
+* Tool results MUST be represented explicitly via `tool_result`.
+* Truncation must set `truncated=true` and indicate the applied cap in `termination.details` or a dedicated `truncation` field if preferred.
+
+### 10.6 Verification output schema (`verify.json`) (v1)
+
+A single JSON document per sample capturing soft verification and gating decisions.
+
+Fields:
+
+* `schema_version` (int) — start at 1
+* `run_id` (string)
+* `sample_id` (string)
+* `soft_verify` (object):
+
+  * `r` (number) — recall score
+  * `threshold` (number)
+  * `passed` (bool)
+* `patch_stats` (object):
+
+  * `files_changed_p1` (int)
+  * `files_changed_p2` (int)
+  * `changed_lines_p1` (int)
+  * `changed_lines_p2` (int)
+* `policy` (object):
+
+  * `max_files_changed` (int)
+  * `max_changed_lines` (int)
+  * `require_pytest_pass` (bool)
+* `gates` (array of objects), each:
+
+  * `name` (string) — e.g., `forbidden_path`, `patch_size`, `pytest`
+  * `passed` (bool)
+  * `details` (string or null)
+* `accepted` (bool)
+* `reject_reason` (string or null)
+
+### 10.7 Tool contract enforcement (v1)
+
+Tool contract is defined in `AGENTS.md` and must be loaded into runtime agent prompts.
+
+Runtime enforcement rules:
+
+* Only the declared tools may be invoked.
+* `run(cmd)` must be executed only in the sandbox and must match an allowlisted argv prefix.
+* Any use of disallowed shell metacharacters invalidates the tool call.
+* Violations terminate the rollout with `termination.reason=invalid_tool_call` and reject the sample.
+
+Tool schema versioning:
+
+* Set `tool_schema_version: 1` in prompts and transcripts.
+* If tool call JSON changes incompatibly, increment version and ensure the trainer/eval code supports it.
+
+## 11. Milestone Plan (Vertical Slices)
+
+This project will be built as a sequence of runnable vertical slices. Each milestone must produce a working CLI command and persisted artifacts on disk. No milestone may require manual editing of generated artifacts.
+
+### Milestone 0 — Repo + Environment Baseline (Complete)
+Definition of done:
+- `bootstrap_env.sh` completes successfully on Ubuntu 24.04 (WSL acceptable)
+- `.venv` exists and `python -m pytest -q` passes
+- Ollama is installed and the teacher model is pulled
+
+### Milestone 1 — Run/Artifact Skeleton (No LLM Yet)
+Goal:
+- Implement the CLI skeleton and create on-disk run/sample artifacts with placeholders.
+
+Definition of done:
+- `python -m sera_lab generate --run-id <id> --count 1` creates:
+  - `runs/<id>/config.snapshot.yaml`
+  - `runs/<id>/samples/000001/` with placeholder files:
+    - `meta.json`, `rollout1.json`, `patch1.diff`, `pr.txt`, `rollout2.json`, `patch2.diff`, `verify.json`
+  - `runs/<id>/manifest.jsonl` with one row following the Manifest Row Schema v1
+- Unit tests assert the folder structure and manifest row creation.
+
+### Milestone 2 — Verifier v1 (Diff Parsing + Soft Verification)
+Goal:
+- Implement diff parsing and soft verification scoring.
+
+Definition of done:
+- `python -m sera_lab verify --run-id <id>`:
+  - reads P1 and P2 diffs from each sample folder
+  - computes recall score r
+  - writes `verify.json` (Verification Output Schema v1)
+  - updates the corresponding manifest row fields (`accepted`, `reject_reason`, `verification.r`)
+- Unit tests validate diff parsing and score calculation with known synthetic diffs.
+
+### Milestone 3 — Sandbox Runner v1 (Docker, Allowlist)
+Goal:
+- Implement `run(cmd)` execution inside a Docker sandbox with strict allowlist and no network.
+
+Definition of done:
+- A Python API exists that runs allowlisted commands in Docker with:
+  - `--network=none`
+  - configured timeouts
+  - stdout/stderr capture with output caps
+- The runner rejects any command not matching an allowlisted argv prefix.
+- Unit tests cover:
+  - allowlisted command succeeds
+  - disallowed command is rejected
+  - timeout is enforced
+
+### Milestone 4 — Ollama Client v1 (Structured Tool Calls)
+Goal:
+- Implement the teacher model client to call Ollama locally and obtain structured outputs suitable for a tool loop.
+
+Definition of done:
+- A Python API exists to send messages to Ollama and receive assistant responses.
+- The runtime prompt includes the tool contract and requires tool calls in a strict JSON schema.
+- The client validates tool-call JSON and can request a format correction retry once.
+- Unit tests cover:
+  - basic Ollama request succeeds (can be skipped/marked integration if needed)
+  - tool-call JSON validation works on canned samples
+
+### Milestone 5 — Runtime Agent Loop v1 (Rollout 1 Only)
+Goal:
+- Implement a bounded tool loop for rollout 1 that produces transcript + patch.
+
+Definition of done:
+- `python -m sera_lab generate --run-id <id> --count 1` now performs rollout 1:
+  - selects a file target (v1 sampling)
+  - runs an agent loop using tools: read_file/search/apply_patch/run
+  - persists `rollout1.json` and `patch1.diff`
+  - runs sandboxed pytest if configured
+  - writes sample `meta.json` with step stats and termination reason
+- At this milestone, PR synthesis and rollout 2 may remain placeholders.
+
+### Milestone 6 — PR Synthesis + Rollout 2 (Full SVG Loop)
+Goal:
+- Complete the SVG loop: rollout 1 -> PR text -> rollout 2 -> soft verify -> accept/reject.
+
+Definition of done:
+- `python -m sera_lab generate --run-id <id> --count N` produces complete sample folders with:
+  - rollout1, patch1, pr, rollout2, patch2, verify
+- `verify.json` is written during generation (and recomputable via `verify` command)
+- Manifest rows record acceptance decisions with stable reject reasons
+
+### Milestone 7 — Dataset Builder v1
+Goal:
+- Build training JSONL from accepted samples.
+
+Definition of done:
+- `python -m sera_lab build-dataset --run-id <id>` creates:
+  - `runs/<id>/train.jsonl` using Transcript Schema v1
+  - `runs/<id>/dataset_report.json` with counts and truncation stats
+- Unit tests validate that only accepted samples are included and schemas match.
+
+### Milestone 8 — Training Stub + Wiring (Training Optional)
+Goal:
+- Add the CLI and code wiring for LoRA training without requiring it to run by default.
+
+Definition of done:
+- `python -m sera_lab train --run-id <id> --adapter-id <name>` exists and:
+  - validates inputs
+  - checks presence of `train.jsonl`
+  - writes a placeholder `runs/<id>/adapters/<name>/train_report.json`
+- Actual QLoRA training implementation can be done next, after sample quality is validated.
+
+### Milestone 9 — LoRA Training v1 (QLoRA)
+Goal:
+- Implement QLoRA training for the selected base model.
+
+Definition of done:
+- A training run emits adapter weights and config under:
+  - `runs/<id>/adapters/<adapter-id>/`
+- A minimal report includes:
+  - dataset size
+  - epochs, LR, rank
+  - wall time
+  - final loss (or equivalent)
+- Training must be reproducible from a frozen manifest + config snapshot.
+
+### Milestone 10 — Evaluation v1 (Golden Tasks)
+Goal:
+- Define and run golden tasks comparing base vs base+adapter.
+
+Definition of done:
+- `python -m sera_lab eval --adapter-id <name>` runs the golden suite and outputs:
+  - success rate
+  - average steps
+  - tool validity rate
+  - pytest pass rate
+- Results are written to a JSON report file under `runs/<id>/`.
